@@ -1,0 +1,10 @@
+GET http://localhost:5001/fold
+Accept: application/json
+
+###
+GET http://localhost:2001/check
+Accept: application/json
+
+###
+GET http://localhost:3001/bet/20
+Accept: application/json
