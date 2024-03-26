@@ -1,3 +1,41 @@
 syntax = "proto3";
 
 option go_package = "/pb";
+
+service Gossip {
+  rpc ShakeHands(Handshake) returns (Handshake);
+  rpc TakeSeat(TakeSeatMsg) returns (Ack);
+  rpc ShuffleAndEncrypt(ShuffleAndEncryptMsg) returns (Ack);
+  rpc SetGameStatus(SetGameStatusMsg) returns (Ack);
+  rpc TakeAction(TakeActionMsg) returns (Ack);
+}
+
+message Handshake {
+  string version = 1;
+  uint32 gameVariant = 2;
+  uint32 gameStatus = 3;
+  string addr = 4;
+  repeated string peerAddrs = 5;
+}
+
+message TakeSeatMsg {
+  string addr = 1;
+}
+
+message Ack {}
+
+message ShuffleAndEncryptMsg {
+  string addr = 1;
+  repeated bytes deck = 2;
+}
+
+message SetGameStatusMsg {
+  int32 gameStatus = 1;
+}
+
+message TakeActionMsg {
+  string addr = 1;
+  int32 gameStatus = 2;
+  int32 playerAction = 3;
+  int32 value = 4;
+}

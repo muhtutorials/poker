@@ -8,98 +8,112 @@ import (
 )
 
 func main() {
-	player1 := createServerAndStart(":1000", ":1001")
-	player2 := createServerAndStart(":2000", ":2001")
-	player3 := createServerAndStart(":3000", ":3001")
-	//player4 := createServerAndStart(":4000", ":4001")
-	//player5 := createServerAndStart(":5000", ":5001")
+	node1 := createServerAndStart(":1000", ":1001")
+	node2 := createServerAndStart(":2000", ":2001")
+	node3 := createServerAndStart(":3000", ":3001")
+	node4 := createServerAndStart(":4000", ":4001")
 
-	go sendReady(1, ":1001")
-	go sendReady(2, ":2001")
-	go sendReady(4, ":3001")
-	//go sendReady(6, ":4001")
-	//go sendReady(8, ":5001")
+	err := node2.Connect(node1.Addr)
+	if err != nil {
+		fmt.Println(err)
+	}
+	err = node3.Connect(node2.Addr)
+	if err != nil {
+		fmt.Println(err)
+	}
+	err = node4.Connect(node3.Addr)
+	if err != nil {
+		fmt.Println(err)
+	}
 
-	player2.Connect(player1.ListenAddr)
+	time.Sleep(time.Second * 1)
+	go takeSeat(1, node1.APIListenAddr)
+	go takeSeat(2, node2.APIListenAddr)
+	go takeSeat(3, node3.APIListenAddr)
+	go takeSeat(4, node4.APIListenAddr)
 
-	time.Sleep(time.Millisecond * 200)
-	player3.Connect(player2.ListenAddr)
+	time.Sleep(5 * time.Second)
 
-	//time.Sleep(time.Millisecond * 100)
-	//player4.Connect(player3.ListenAddr)
-	//
-	//time.Sleep(time.Millisecond * 100)
-	//player5.Connect(player4.ListenAddr)
-
-	// flop
-	time.Sleep(time.Second * 5)
-	http.Get("http://localhost:1001/fold")
-	time.Sleep(time.Second)
+	// PREFLOP
+	time.Sleep(time.Second * 2)
 	http.Get("http://localhost:2001/fold")
-	time.Sleep(time.Second)
+
+	time.Sleep(time.Second * 2)
 	http.Get("http://localhost:3001/fold")
-	//time.Sleep(time.Second)
-	//http.Get("http://localhost:4001/fold")
-	//time.Sleep(time.Second)
-	//http.Get("http://localhost:5001/fold")
-	//
-	// turn
-	time.Sleep(time.Second * 5)
+
+	time.Sleep(time.Second * 2)
+	http.Get("http://localhost:4001/fold")
+
+	time.Sleep(time.Second * 2)
 	http.Get("http://localhost:1001/fold")
-	time.Sleep(time.Second)
+
+	// FLOP
+	time.Sleep(time.Second * 2)
+	http.Get("http://localhost:2001/check")
+
+	time.Sleep(time.Second * 2)
+	http.Get("http://localhost:3001/check")
+
+	time.Sleep(time.Second * 2)
+	http.Get("http://localhost:4001/check")
+
+	time.Sleep(time.Second * 2)
+	http.Get("http://localhost:1001/check")
+
+	// TURN
+	time.Sleep(time.Second * 2)
+	http.Get("http://localhost:2001/bet/2")
+
+	time.Sleep(time.Second * 2)
+	http.Get("http://localhost:3001/bet/3")
+
+	time.Sleep(time.Second * 2)
+	http.Get("http://localhost:4001/bet/4")
+
+	time.Sleep(time.Second * 2)
+	http.Get("http://localhost:1001/bet/1")
+
+	// RIVER
+	time.Sleep(time.Second * 2)
 	http.Get("http://localhost:2001/fold")
-	time.Sleep(time.Second)
+
+	time.Sleep(time.Second * 2)
 	http.Get("http://localhost:3001/fold")
-	//time.Sleep(time.Second)
-	//http.Get("http://localhost:4001/fold")
-	//time.Sleep(time.Second)
-	//http.Get("http://localhost:5001/fold")
-	//
-	// river
-	time.Sleep(time.Second * 5)
+
+	time.Sleep(time.Second * 2)
+	http.Get("http://localhost:4001/fold")
+
+	time.Sleep(time.Second * 2)
 	http.Get("http://localhost:1001/fold")
-	time.Sleep(time.Second)
-	http.Get("http://localhost:2001/fold")
-	time.Sleep(time.Second)
-	http.Get("http://localhost:3001/fold")
-	//time.Sleep(time.Second)
-	//http.Get("http://localhost:4001/fold")
-	//time.Sleep(time.Second)
-	//http.Get("http://localhost:5001/fold")
-	//
-	// ready
-	time.Sleep(time.Second * 5)
-	http.Get("http://localhost:1001/fold")
-	time.Sleep(time.Second)
-	http.Get("http://localhost:2001/fold")
-	time.Sleep(time.Second)
-	http.Get("http://localhost:3001/fold")
-	//time.Sleep(time.Second)
-	//http.Get("http://localhost:4001/fold")
-	//time.Sleep(time.Second)
-	//http.Get("http://localhost:5001/fold")
 
 	select {}
 }
 
-func createServerAndStart(addr, apiAddr string) *p2p.Server {
+func createServerAndStart(addr, apiAddr string) *p2p.Node {
 	config := p2p.Config{
-		ListenAddr:    addr,
+		Addr:          addr,
 		APIListenAddr: apiAddr,
 		GameVariant:   p2p.TexasHoldem,
 		Version:       "Poker v0.1-alpha",
 	}
 
-	server := p2p.NewServer(config)
+	node := p2p.NewNode(config)
 
-	go server.Start()
-
+	go func() {
+		err := node.Start()
+		if err != nil {
+			fmt.Println(err)
+		}
+	}()
 	time.Sleep(time.Millisecond * 100)
 
-	return server
+	return node
 }
 
-func sendReady(sleep int, addr string) {
+func takeSeat(sleep int, addr string) {
 	time.Sleep(time.Duration(sleep) * time.Second)
-	http.Get(fmt.Sprintf("http://localhost%s/ready", addr))
+	_, err := http.Get(fmt.Sprintf("http://localhost%s/take-seat", addr))
+	if err != nil {
+		fmt.Println(err)
+	}
 }

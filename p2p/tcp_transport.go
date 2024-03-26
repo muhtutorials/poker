@@ -7,6 +7,11 @@ import (
 	"net"
 )
 
+type Message struct {
+	From    string
+	Payload any
+}
+
 type TCPTransport struct {
 	listenAddr string
 	addPeerCh  chan *Peer

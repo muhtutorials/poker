@@ -1,9 +1,36 @@
 package p2p
 
 const (
+	TexasHoldem GameVariant = iota
+	FiveCardStud
+	FiveOPoker
+	Guts
+	Countdown
+)
+
+type GameVariant uint32
+
+func (v GameVariant) String() string {
+	switch v {
+	case TexasHoldem:
+		return "Texas Hold'em"
+	case FiveCardStud:
+		return "Five Card Stud"
+	case FiveOPoker:
+		return "Five-O Poker"
+	case Guts:
+		return "Guts"
+	case Countdown:
+		return "Countdown"
+	default:
+		return "Unknown game variant"
+	}
+}
+
+const (
 	Connected GameStatus = iota
-	Ready
-	ShuffleAndDeal
+	AtTable
+	ShuffleAndEncrypt
 	PreFlop
 	Flop
 	Turn
@@ -16,12 +43,12 @@ func (s GameStatus) String() string {
 	switch s {
 	case Connected:
 		return "Connected"
-	case Ready:
-		return "Ready"
-	case ShuffleAndDeal:
-		return "Shuffle and deal"
+	case AtTable:
+		return "At table"
+	case ShuffleAndEncrypt:
+		return "Shuffle and encrypt"
 	case PreFlop:
-		return "Pre flop"
+		return "Preflop"
 	case Flop:
 		return "Flop"
 	case Turn:

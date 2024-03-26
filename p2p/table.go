@@ -8,15 +8,16 @@ import (
 
 type Player struct {
 	addr     string
+	tablePos int
 	status   GameStatus
 	action   PlayerAction
-	tablePos int
 }
 
-func NewPlayer(addr string) *Player {
+func NewPlayer(addr string, tablePos int) *Player {
 	return &Player{
 		addr:     addr,
-		tablePos: -1,
+		tablePos: tablePos,
+		status:   AtTable,
 	}
 }
 
@@ -46,7 +47,7 @@ func (t *Table) String() string {
 	return strings.Join(parts, " ")
 }
 
-func (t *Table) AddPlayer(addr string) error {
+func (t *Table) AddPlayer(addr string, pos int) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -54,10 +55,7 @@ func (t *Table) AddPlayer(addr string) error {
 		return fmt.Errorf("player table is full")
 	}
 
-	pos := t.GetNextFreeSeat()
-	player := NewPlayer(addr)
-	player.status = Ready
-	player.tablePos = pos
+	player := NewPlayer(addr, pos)
 
 	t.seats[pos] = player
 
@@ -193,19 +191,44 @@ func (t *Table) SetPlayerStatus(addr string, status GameStatus) {
 	player.status = status
 }
 
-func (t *Table) AddPlayerOnPosition(addr string, pos int) error {
+func (t *Table) GetPlayerStatus(addr string) GameStatus {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	player, err := t.getPlayer(addr)
+	if err != nil {
+		panic(err)
+	}
+	return player.status
+}
+
+func (t *Table) SetPlayerAction(addr string, action PlayerAction) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if len(t.seats) == t.max {
-		return fmt.Errorf("player table is full")
+	player, err := t.getPlayer(addr)
+	if err != nil {
+		panic(err)
 	}
+	player.action = action
+}
 
-	player := NewPlayer(addr)
-	player.status = Ready
-	player.tablePos = pos
+func (t *Table) NextRound(status GameStatus) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
-	t.seats[pos] = player
+	for i, _ := range t.seats {
+		player, ok := t.seats[i]
+		if ok {
+			player.status = status
+			player.action = PlayerActionNone
+		}
+	}
+}
 
-	return nil
+func (t *Table) EmptyTable() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.seats = make(map[int]*Player)
 }

@@ -3,15 +3,16 @@ package p2p
 import (
 	"fmt"
 	"github.com/sirupsen/logrus"
+	"poker/pb"
 	"sync/atomic"
 	"time"
 )
 
 type Game struct {
-	listenAddr   string
+	addr         string
 	broadcastCh  chan *Broadcast
 	table        *Table
-	status       GameStatus
+	gameStatus   GameStatus
 	dealer       atomic.Int32
 	playerList   *PlayerList
 	playerTurn   atomic.Int32
@@ -20,12 +21,13 @@ type Game struct {
 
 func NewGame(addr string, bc chan *Broadcast) *Game {
 	g := &Game{
-		listenAddr:  addr,
+		addr:        addr,
 		broadcastCh: bc,
 		table:       NewTable(6),
 		playerList:  &PlayerList{},
 	}
 	g.playerList.add(addr)
+	g.setPlayerTurn()
 	go g.loop()
 	return g
 }
@@ -35,11 +37,11 @@ func (g *Game) loop() {
 		dealer, _ := g.getDealer()
 
 		logrus.WithFields(logrus.Fields{
-			"server":     g.listenAddr,
+			"server":     g.addr,
 			"playerList": g.playerList.list,
-			"gameStatus": g.status,
+			"gameStatus": g.gameStatus,
 			"dealer":     dealer,
-			"table":      g.table,
+			"playerTurn": g.playerTurn.Load(),
 		}).Info("game state")
 		logrus.WithFields(logrus.Fields{
 			"table": g.table,
@@ -49,89 +51,121 @@ func (g *Game) loop() {
 
 func (g *Game) getDealer() (string, bool) {
 	dealerAddr := g.playerList.get(int(g.dealer.Load()))
-	return dealerAddr, g.listenAddr == dealerAddr
+	return dealerAddr, g.addr == dealerAddr
 }
 
-func (g *Game) setGameStatus(s GameStatus) {
-	atomic.StoreInt32((*int32)(&g.status), int32(s))
+func (g *Game) atomicSetGameStatus(s GameStatus) {
+	atomic.StoreInt32((*int32)(&g.gameStatus), int32(s))
 }
 
-func (g *Game) getGameStatus() GameStatus {
-	return GameStatus(atomic.LoadInt32((*int32)(&g.status)))
+func (g *Game) atomicGetGameStatus() GameStatus {
+	return GameStatus(atomic.LoadInt32((*int32)(&g.gameStatus)))
 }
 
-func (g *Game) setPlayerAction(a PlayerAction) {
+func (g *Game) atomicSetPlayerAction(a PlayerAction) {
 	atomic.StoreInt32((*int32)(&g.playerAction), int32(a))
 }
 
-func (g *Game) getPlayerAction() PlayerAction {
+func (g *Game) atomicGetPlayerAction() PlayerAction {
 	return PlayerAction(atomic.LoadInt32((*int32)(&g.playerAction)))
 }
 
-func (g *Game) AddPlayer(from string) {
-	g.playerList.add(from)
+func (g *Game) AddPlayer(addr string) {
+	g.playerList.add(addr)
 }
 
-func (g *Game) sendToPlayers(payload any, players ...string) {
+func (g *Game) Broadcast(payload any, players ...string) {
 	g.broadcastCh <- &Broadcast{
 		To:      players,
 		Payload: payload,
 	}
 }
 
-func (g *Game) SetReady() {
-	tablePos := g.playerList.getIndex(g.listenAddr)
-	g.table.AddPlayerOnPosition(g.listenAddr, tablePos)
-
-	g.sendToPlayers(Ready, g.getOtherPlayers()...)
-	g.SetStatus(Ready)
-}
-
-func (g *Game) deal() {
-	fmt.Printf("I'm dealer (%s)\n", g.listenAddr)
-	if g.getGameStatus() == Ready {
-		g.InitShuffleAndDeal()
+// take seat after API call to "/take-seat" address
+func (g *Game) takeSeatOut() {
+	err := g.addPlayerToTable(g.addr)
+	if err != nil {
+		fmt.Println(err)
 	}
+
+	g.atomicSetGameStatus(AtTable)
+
+	g.Broadcast(&pb.TakeSeatMsg{Addr: g.addr}, g.getOtherPlayers()...)
 }
 
-func (g *Game) SetPlayerReady(from string) {
-	tablePos := g.playerList.getIndex(from)
-	g.table.AddPlayerOnPosition(from, tablePos)
+func (g *Game) takeSeatIn(addr string) {
+	err := g.addPlayerToTable(addr)
+	if err != nil {
+		fmt.Println(err)
+	}
 
 	// if we don't have enough players the round can't be started
-	if g.table.NumOfPlayers() < 3 {
+	if g.table.NumOfPlayers() < 4 {
 		return
 	}
 
-	if _, areWeDealer := g.getDealer(); areWeDealer {
+	if _, isDealer := g.getDealer(); isDealer {
 		go func() {
-			g.deal()
+			fmt.Printf("I'm dealer (%s)\n", g.addr)
+			if g.atomicGetGameStatus() == AtTable {
+				g.shuffleAndEncryptOut(EncryptedDeck{})
+			}
 		}()
 	}
 
 	logrus.WithFields(logrus.Fields{
-		"we":     g.listenAddr,
-		"player": from,
-	}).Info("Setting player status to ready")
+		"server": g.addr,
+		"player": addr,
+	}).Info("Setting player status to 'At table'")
 }
 
-func (g *Game) InitShuffleAndDeal() {
-	g.shuffleAndDeal(EncryptedDeck{})
+func (g *Game) addPlayerToTable(addr string) error {
+	tablePos := g.playerList.getIndex(addr)
+	err := g.table.AddPlayer(addr, tablePos)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
-func (g *Game) shuffleAndDeal(d EncryptedDeck) {
-	dealToPlayer, err := g.table.GetNextPlayer(g.listenAddr)
+func (g *Game) shuffleAndEncryptOut(d EncryptedDeck) {
+	nextPlayer, err := g.table.GetNextPlayer(g.addr)
 	if err != nil {
 		panic(err)
 	}
-	g.SetStatus(ShuffleAndDeal)
-	g.sendToPlayers(EncryptedDeck{}, dealToPlayer.addr)
+	g.setGameStatusOut(ShuffleAndEncrypt)
+	g.Broadcast(&pb.ShuffleAndEncryptMsg{Deck: d, Addr: g.addr}, nextPlayer.addr)
+}
+
+func (g *Game) shuffleAndEncryptIn(msg *pb.ShuffleAndEncryptMsg) error {
+	prevPlayer, err := g.table.GetPrevPlayer(g.addr)
+	if err != nil {
+		panic(err)
+	}
+
+	if msg.Addr != prevPlayer.addr {
+		return fmt.Errorf(
+			"received encrypted deck from a wrong player (%s), should be (%s)",
+			msg.Addr, prevPlayer)
+	}
+
+	_, isDealer := g.getDealer()
+
+	if isDealer && msg.Addr == prevPlayer.addr {
+		logrus.Info("Shuffle round complete")
+		g.setGameStatusOut(PreFlop)
+		return nil
+	}
+
+	g.shuffleAndEncryptOut(EncryptedDeck{})
+
+	return nil
 }
 
 func (g *Game) getOtherPlayers() []string {
 	var players []string
 	for _, addr := range g.playerList.list {
-		if addr == g.listenAddr {
+		if addr == g.addr {
 			continue
 		}
 		players = append(players, addr)
@@ -139,65 +173,84 @@ func (g *Game) getOtherPlayers() []string {
 	return players
 }
 
-func (g *Game) SetStatus(s GameStatus) {
-	if g.status != s {
-		g.setGameStatus(s)
-		g.table.SetPlayerStatus(g.listenAddr, s)
+func (g *Game) setGameStatusOut(s GameStatus) {
+	if s != g.gameStatus {
+		g.atomicSetGameStatus(s)
+		g.table.SetPlayerStatus(g.addr, s)
+		g.table.SetPlayerAction(g.addr, PlayerActionNone)
+		g.Broadcast(&pb.SetGameStatusMsg{
+			GameStatus: int32(s),
+		}, g.getOtherPlayers()...)
 	}
 }
 
-func (g *Game) shuffleAndEncrypt(from string, deck EncryptedDeck) error {
-	prevPlayer, err := g.table.GetPrevPlayer(g.listenAddr)
-	if err != nil {
-		panic(err)
+func (g *Game) setGameStatusIn(addr string, s GameStatus) {
+	if g.isMessageFromDealer(addr) {
+		g.atomicSetGameStatus(s)
+		g.table.SetPlayerStatus(addr, s)
+		g.table.SetPlayerAction(addr, PlayerActionNone)
+		g.table.SetPlayerStatus(g.addr, s)
+		g.table.SetPlayerAction(g.addr, PlayerActionNone)
+		return
 	}
 
-	if from != prevPlayer.addr {
-		return fmt.Errorf(
-			"received encrypted deck from a wrong player (%s), should be (%s)",
-			from, prevPlayer)
+	oldStatus := g.table.GetPlayerStatus(addr)
+	if oldStatus == s {
+		return
 	}
-
-	_, isDealer := g.getDealer()
-
-	if isDealer && from == prevPlayer.addr {
-		logrus.Info("Shuffle round complete")
-		g.SetStatus(PreFlop)
-		g.table.SetPlayerStatus(g.listenAddr, PreFlop)
-		g.sendToPlayers(PreFlop, g.getOtherPlayers()...)
-		return nil
-	}
-
-	g.shuffleAndDeal(EncryptedDeck{})
-
-	return nil
+	g.table.SetPlayerStatus(addr, s)
+	g.Broadcast(&pb.SetGameStatusMsg{
+		GameStatus: int32(s),
+	}, g.getOtherPlayers()...)
 }
 
-func (g *Game) TakeAction(action PlayerAction, value int) error {
-	if !g.canTakeAction(g.listenAddr) {
-		return fmt.Errorf("player (%s) taking action before his turn", g.listenAddr)
+func (g *Game) takeActionOut(action PlayerAction, value int) error {
+	if !g.canTakeAction(g.addr) {
+		return fmt.Errorf("player (%s) taking action before his turn", g.addr)
 	}
-	g.setPlayerAction(action)
+
+	g.atomicSetPlayerAction(action)
+	g.table.SetPlayerAction(g.addr, action)
 
 	g.incrPlayerTurn()
 
-	if g.playerList.get(int(g.dealer.Load())) == g.listenAddr {
-		g.advanceToNextRound()
-	}
-
-	g.sendToPlayers(MessagePlayerAction{
-		GameStatus:   g.status,
-		PlayerAction: action,
-		Value:        value,
+	g.Broadcast(&pb.TakeActionMsg{
+		Addr:         g.addr,
+		GameStatus:   int32(g.gameStatus),
+		PlayerAction: int32(action),
+		Value:        int32(value),
 	}, g.getOtherPlayers()...)
+
+	if _, isDealer := g.getDealer(); isDealer {
+		g.nextRound()
+	}
 
 	return nil
 }
 
-func (g *Game) canTakeAction(from string) bool {
-	playerAddr := g.playerList.get(int(g.playerTurn.Load()))
+func (g *Game) takeActionIn(msg *pb.TakeActionMsg) error {
+	if !g.canTakeAction(msg.Addr) {
+		return fmt.Errorf("player (%s) taking action before his turn", msg.Addr)
+	}
 
-	return playerAddr == from
+	if GameStatus(msg.GameStatus) != g.gameStatus && !g.isMessageFromDealer(msg.Addr) {
+		return fmt.Errorf("player (%s) doesn't have correct game status", msg.Addr)
+	}
+
+	g.table.SetPlayerAction(msg.Addr, PlayerAction(msg.PlayerAction))
+
+	g.incrPlayerTurn()
+
+	if g.isMessageFromDealer(msg.Addr) {
+		g.nextRound()
+	}
+
+	return nil
+}
+
+func (g *Game) canTakeAction(addr string) bool {
+	playerTurnAddr := g.playerList.get(int(g.playerTurn.Load()))
+	return playerTurnAddr == addr
 }
 
 func (g *Game) incrPlayerTurn() {
@@ -208,30 +261,28 @@ func (g *Game) incrPlayerTurn() {
 	}
 }
 
-func (g *Game) handleOtherPlayerAction(msg MessagePlayerAction, from string) error {
-	if !g.canTakeAction(from) {
-		return fmt.Errorf("player (%s) taking action before his turn", from)
-	}
-
-	if msg.GameStatus != g.status && !g.isMessageFromDealer(from) {
-		return fmt.Errorf("player (%s) doesn't have correct game status", from)
-	}
-
-	if g.playerList.get(int(g.dealer.Load())) == from {
-		g.advanceToNextRound()
-	}
-
-	g.incrPlayerTurn()
-
-	return nil
+func (g *Game) setPlayerTurn() {
+	g.playerTurn.Store(g.dealer.Load() + 1)
 }
 
-func (g *Game) isMessageFromDealer(from string) bool {
-	return g.playerList.get(int(g.dealer.Load())) == from
+func (g *Game) isMessageFromDealer(addr string) bool {
+	return g.playerList.get(int(g.dealer.Load())) == addr
+}
+
+func (g *Game) nextRound() {
+	g.atomicSetPlayerAction(PlayerActionNone)
+	if g.atomicGetGameStatus() == River {
+		//g.table.EmptyTable()
+		g.takeSeatOut()
+		return
+	}
+	nextGameStatus := g.getNextGameStatus()
+	g.atomicSetGameStatus(nextGameStatus)
+	g.table.NextRound(nextGameStatus)
 }
 
 func (g *Game) getNextGameStatus() GameStatus {
-	switch g.status {
+	switch g.gameStatus {
 	case PreFlop:
 		return Flop
 	case Flop:
@@ -239,19 +290,8 @@ func (g *Game) getNextGameStatus() GameStatus {
 	case Turn:
 		return River
 	case River:
-		return Ready
+		return AtTable
 	default:
 		panic("invalid game status")
 	}
-}
-
-func (g *Game) advanceToNextRound() {
-	g.setPlayerAction(PlayerActionNone)
-
-	if g.getGameStatus() == River {
-		g.SetReady()
-		return
-	}
-
-	g.status = g.getNextGameStatus()
 }
